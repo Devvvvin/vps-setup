@@ -8,11 +8,11 @@ set -e
 # ------------------------------
 # 前置检查
 # ------------------------------
-# 提示当前目录是否包含 Prezto 本地配置包 prezto-config.tar.gz（仅做提醒）
-if [ -f "$PWD/prezto-config.tar.gz" ]; then
-    echo "检测到本地 Prezto 配置: $PWD/prezto-config.tar.gz"
+# 提示当前目录是否包含 Prezto 本地配置目录 `prezto-config`（仅做提醒）
+if [ -d "$PWD/prezto-config" ]; then
+    echo "检测到本地 Prezto 配置目录: $PWD/prezto-config"
 else
-    echo "警告: 未在当前目录找到 prezto-config.tar.gz。若要安装 Zsh+Prezto，请将 prezto-config.tar.gz 放在当前目录后再运行脚本。"
+    echo "警告: 未在当前目录找到 prezto-config 目录。若要安装 Zsh+Prezto，请将 prezto-config 目录放在当前目录后再运行脚本。"
 fi
 
 # 强制以 root 运行
@@ -193,32 +193,28 @@ install_component() {
             echo "官方 Prezto 仓库已克隆"
         fi
 
-        # 获取本地配置包
-        TEMP_DIR=$(mktemp -d)
-        if [ -f "$PWD/prezto-config.tar.gz" ]; then
-            cp "$PWD/prezto-config.tar.gz" "$TEMP_DIR/prezto-config.tar.gz"
-        else
-            echo "错误: 未找到 $PWD/prezto-config.tar.gz"
-            rm -rf "$TEMP_DIR"
+        # 使用本地 prezto-config 目录（无需压缩包）
+        LOCAL_PREZTO_DIR="$PWD/prezto-config"
+        if [ ! -d "$LOCAL_PREZTO_DIR" ]; then
+            echo "错误: 未找到目录 $LOCAL_PREZTO_DIR"
             return 1
         fi
-        tar -xzf "$TEMP_DIR/prezto-config.tar.gz" -C "$TEMP_DIR"
 
         # 覆盖 runcoms
-        if [ -d "$TEMP_DIR/runcoms" ]; then
-            cp -r "$TEMP_DIR/runcoms/." "$USER_HOME/.zprezto/runcoms/"
+        if [ -d "$LOCAL_PREZTO_DIR/runcoms" ]; then
+            cp -r "$LOCAL_PREZTO_DIR/runcoms/." "$USER_HOME/.zprezto/runcoms/"
             chown -R "$USERNAME:$USERNAME" "$USER_HOME/.zprezto/runcoms"
         fi
 
         # 覆盖 prompt 模块
-        if [ -d "$TEMP_DIR/modules/prompt" ]; then
-            cp -r "$TEMP_DIR/modules/prompt/." "$USER_HOME/.zprezto/modules/prompt/"
+        if [ -d "$LOCAL_PREZTO_DIR/modules/prompt" ]; then
+            cp -r "$LOCAL_PREZTO_DIR/modules/prompt/." "$USER_HOME/.zprezto/modules/prompt/"
             chown -R "$USERNAME:$USERNAME" "$USER_HOME/.zprezto/modules/prompt"
         fi
 
         # 覆盖 .p10k.zsh
-        if [ -f "$TEMP_DIR/.p10k.zsh" ]; then
-            cp "$TEMP_DIR/.p10k.zsh" "$USER_HOME/.p10k.zsh"
+        if [ -f "$LOCAL_PREZTO_DIR/.p10k.zsh" ]; then
+            cp "$LOCAL_PREZTO_DIR/.p10k.zsh" "$USER_HOME/.p10k.zsh"
             chown "$USERNAME:$USERNAME" "$USER_HOME/.p10k.zsh"
         fi
 
@@ -238,7 +234,6 @@ install_component() {
         # 设置 zsh 为默认 shell
         chsh -s /bin/zsh "$USERNAME"
 
-        rm -rf "$TEMP_DIR"
         echo "Prezto 安装完成并应用本地自定义配置（runcoms + modules/prompt + .p10k.zsh）"
         echo "请重新登录用户 $USERNAME 生效。"
         add_installed "$component_name"
