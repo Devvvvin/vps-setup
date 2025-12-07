@@ -1,2 +1,2 @@
-# vps-init
-Server initialization script
+# vps-setup
+Server setup script
