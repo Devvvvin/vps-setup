@@ -174,15 +174,13 @@ install_component() {
         if ! id "$USERNAME" &>/dev/null; then
             echo "用户 $USERNAME 不存在，正在创建..."
             useradd -m -s /bin/bash "$USERNAME"
-            if [ ! -f /etc/sudoers.d/90-"$USERNAME" ]; then
-                echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/90-"$USERNAME"
-                chmod 440 /etc/sudoers.d/90-"$USERNAME"
-            fi
-            # 交互式设置用户密码
+            echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/90-"$USERNAME"
+            chmod 440 /etc/sudoers.d/90-"$USERNAME"
             set_user_password "$USERNAME"
         fi
         USER_HOME=$(eval echo "~$USERNAME")
 
+        # 安装 Zsh 和 Git
         if ! command -v zsh &>/dev/null; then
             apt update
             apt install -y zsh git curl
@@ -195,50 +193,54 @@ install_component() {
             echo "官方 Prezto 仓库已克隆"
         fi
 
-        # 获取自定义配置文件：仅从当前目录读取 runcoms.tar.gz
+        # 获取本地配置包
         TEMP_DIR=$(mktemp -d)
         if [ -f "$PWD/prezto-config.tar.gz" ]; then
             cp "$PWD/prezto-config.tar.gz" "$TEMP_DIR/prezto-config.tar.gz"
         else
-            echo "错误: 未找到 $PWD/prezto-config.tar.gz — 请将 prezto-config.tar.gz 放在当前目录后再运行此选项。"
+            echo "错误: 未找到 $PWD/prezto-config.tar.gz"
             rm -rf "$TEMP_DIR"
             return 1
         fi
         tar -xzf "$TEMP_DIR/prezto-config.tar.gz" -C "$TEMP_DIR"
 
-        # 覆盖 Prezto runcoms 文件
-        for rcfile in zshrc zlogin zlogout zpreztorc; do
-            if [ -f "$TEMP_DIR/$rcfile" ]; then
-                cp "$TEMP_DIR/$rcfile" "$USER_HOME/.$rcfile"
-                chown "$USERNAME:$USERNAME" "$USER_HOME/.$rcfile"
-            fi
-        done
+        # 覆盖 runcoms
+        if [ -d "$TEMP_DIR/runcoms" ]; then
+            cp -r "$TEMP_DIR/runcoms/." "$USER_HOME/.zprezto/runcoms/"
+            chown -R "$USERNAME:$USERNAME" "$USER_HOME/.zprezto/runcoms"
+        fi
 
-        # 查找并安装自定义 prompt 主题（支持压缩包任意位置的 prompt 目录）
-        PROMPT_SRC=$(find "$TEMP_DIR" -type d -name prompt -print -quit || true)
-        if [ -n "$PROMPT_SRC" ]; then
-            PREZTO_PROMPT_DIR="$USER_HOME/.zprezto/modules/prompt"
-            mkdir -p "$PREZTO_PROMPT_DIR"
-            cp -r "$PROMPT_SRC/." "$PREZTO_PROMPT_DIR/"
-            chown -R "$USERNAME:$USERNAME" "$PREZTO_PROMPT_DIR"
-            echo "已安装自定义 Prezto prompt 主题到 $PREZTO_PROMPT_DIR"
+        # 覆盖 prompt 模块
+        if [ -d "$TEMP_DIR/modules/prompt" ]; then
+            cp -r "$TEMP_DIR/modules/prompt/." "$USER_HOME/.zprezto/modules/prompt/"
+            chown -R "$USERNAME:$USERNAME" "$USER_HOME/.zprezto/modules/prompt"
         fi
 
         # 覆盖 .p10k.zsh
         if [ -f "$TEMP_DIR/.p10k.zsh" ]; then
             cp "$TEMP_DIR/.p10k.zsh" "$USER_HOME/.p10k.zsh"
+            chown "$USERNAME:$USERNAME" "$USER_HOME/.p10k.zsh"
         fi
 
-        # 创建 runcoms 符号链接（使用官方 Prezto runcoms），在 zsh 中运行以正确处理 :t
-        sudo -u "$USERNAME" zsh -ic 'setopt EXTENDED_GLOB; for rcfile in $HOME/.zprezto/runcoms/^README.md(.N); do ln -sf "$rcfile" "$HOME/.${rcfile:t}"; done'
+        # 创建 runcoms 符号链接
+        for rcfile in "$USER_HOME/.zprezto/runcoms/"*; do
+            filename=$(basename "$rcfile")
+            if [ "$filename" != "README.md" ]; then
+                ln -sf "$rcfile" "$USER_HOME/.$filename"
+                chown "$USERNAME:$USERNAME" "$USER_HOME/.$filename"
+            fi
+        done
+
+        # 禁用 zsh-newuser-install
+        echo 'export DISABLE_ZSH_NEWUSER_INSTALL=true' >>"$USER_HOME/.zshrc"
+        chown "$USERNAME:$USERNAME" "$USER_HOME/.zshrc"
 
         # 设置 zsh 为默认 shell
         chsh -s /bin/zsh "$USERNAME"
-        chown -R $USERNAME:$USERNAME "$USER_HOME/.zprezto"
-        chown $USERNAME:$USERNAME "$USER_HOME/.p10k.zsh"
+
         rm -rf "$TEMP_DIR"
-        echo "Prezto 安装完成并应用本地自定义配置"
-        echo "提示：设置 zsh 为默认 shell 后，需重新登录用户 $USERNAME 生效"
+        echo "Prezto 安装完成并应用本地自定义配置（runcoms + modules/prompt + .p10k.zsh）"
+        echo "请重新登录用户 $USERNAME 生效。"
         add_installed "$component_name"
         ;;
     4)
