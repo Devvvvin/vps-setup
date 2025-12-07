@@ -160,6 +160,8 @@ install_component() {
                 chmod 440 /etc/sudoers.d/90-$USERNAME
             fi
             USER_HOME=$(eval echo "~$USERNAME")
+            # 交互式设置用户密码
+            set_user_password "$USERNAME"
             echo "用户 $USERNAME 创建完成并设置 sudo 免密码"
             add_installed "$component_name"
         else
@@ -176,6 +178,8 @@ install_component() {
                 echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/90-"$USERNAME"
                 chmod 440 /etc/sudoers.d/90-"$USERNAME"
             fi
+            # 交互式设置用户密码
+            set_user_password "$USERNAME"
         fi
         USER_HOME=$(eval echo "~$USERNAME")
 
