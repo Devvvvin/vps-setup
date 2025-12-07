@@ -37,6 +37,17 @@ ALLOWED_UDP_PORTS=("$SSH_PORT" "80" "443" "3478" "8443")
 # ------------------------------
 installed=()
 
+# Helper: add component to installed list if not present
+add_installed() {
+    local name="$1"
+    for it in "${installed[@]}"; do
+        if [ "$it" = "$name" ]; then
+            return
+        fi
+    done
+    installed+=("$name")
+}
+
 # ------------------------------
 # 菜单显示函数
 # ------------------------------
@@ -71,10 +82,15 @@ install_component() {
     *) echo "无效选项: $1"; return ;;
     esac
 
-    # 检查组件是否已安装，避免重复添加
+    # 检查组件是否已安装。
+    # 仅对 1 和 2 项（SSH 端口、新增用户）在已安装时跳过，其他项允许重新安装/覆盖。
     if [[ " ${installed[*]} " =~ ${component_name} ]]; then
-        echo "组件 $component_name 已安装，跳过"
-        return
+        if [ "$1" -eq 1 ] || [ "$1" -eq 2 ]; then
+            echo "组件 $component_name 已安装，跳过"
+            return
+        else
+            echo "组件 $component_name 已安装，继续执行以重新安装/覆盖..."
+        fi
     fi
 
     # 执行具体安装逻辑
@@ -96,7 +112,7 @@ install_component() {
         # 尝试重启 ssh 服务，兼容不同系统的服务名
         if systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null; then
             echo "SSH端口已修改为 $SSH_PORT"
-            installed+=("$component_name")
+            add_installed "$component_name"
         else
             echo "已更新 /etc/ssh/sshd_config，但重启 ssh 服务失败，请手动重启并检查配置。"
         fi
@@ -110,7 +126,7 @@ install_component() {
             fi
             USER_HOME=$(eval echo "~$USERNAME")
             echo "用户 $USERNAME 创建完成并设置 sudo 免密码"
-            installed+=("$component_name")
+            add_installed "$component_name"
         else
             echo "用户 $USERNAME 已存在"
         fi
@@ -178,7 +194,7 @@ install_component() {
         rm -rf "$TEMP_DIR"
         echo "Prezto 安装完成并应用本地自定义配置"
         echo "提示：设置 zsh 为默认 shell 后，需重新登录用户 $USERNAME 生效"
-        installed+=("$component_name")
+        add_installed "$component_name"
         ;;
     4)
         # 安装 Docker + Docker Compose（系统包）
@@ -208,7 +224,7 @@ install_component() {
 				return
 			fi
         fi
-        installed+=("$component_name")
+        add_installed "$component_name"
         ;;
     5)
         if ! command -v ufw &>/dev/null; then
@@ -224,7 +240,7 @@ install_component() {
             for port in "${ALLOWED_UDP_PORTS[@]}"; do ufw allow "$port"/udp; done
             ufw --force enable
             echo "UFW 已启用，放行 TCP: ${ALLOWED_TCP_PORTS[*]}, UDP: ${ALLOWED_UDP_PORTS[*]}"
-            installed+=("$component_name")
+            add_installed "$component_name"
         else
             echo "已取消 UFW 配置"
         fi
@@ -253,13 +269,13 @@ logpath = /var/lib/docker/containers/*/*.log
 EOL
         systemctl enable --now fail2ban
         echo "Fail2Ban 已安装并启用"
-        installed+=("$component_name")
+        add_installed "$component_name"
         ;;
     7)
         curl -fsSL https://tailscale.com/install.sh | sh
         systemctl enable --now tailscaled
         echo "Tailscale 已安装"
-        installed+=("$component_name")
+        add_installed "$component_name"
         ;;
     esac
 }
