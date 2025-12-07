@@ -48,6 +48,38 @@ add_installed() {
     installed+=("$name")
 }
 
+# Prompt interactively for a password and set it for the given user
+set_user_password() {
+    local user="$1"
+    # Require chpasswd available
+    if ! command -v chpasswd >/dev/null 2>&1; then
+        echo "警告: 系统上没有 chpasswd，无法为用户设置密码。"
+        return 1
+    fi
+    while true; do
+        read -s -p "为用户 $user 设置密码: " passwd1
+        echo
+        read -s -p "请再次输入密码以确认: " passwd2
+        echo
+        if [ -z "$passwd1" ]; then
+            echo "密码不能为空，请重试。"
+            continue
+        fi
+        if [ "$passwd1" != "$passwd2" ]; then
+            echo "两次输入不匹配，请重试。"
+            continue
+        fi
+        echo "$user:$passwd1" | chpasswd
+        if [ $? -eq 0 ]; then
+            echo "密码已设置。"
+            return 0
+        else
+            echo "设置密码失败，请检查系统工具。"
+            return 1
+        fi
+    done
+}
+
 # ------------------------------
 # 菜单显示函数
 # ------------------------------
