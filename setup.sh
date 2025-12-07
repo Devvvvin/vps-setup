@@ -8,11 +8,11 @@ set -e
 # ------------------------------
 # 前置检查
 # ------------------------------
-# 提示当前目录是否包含 Prezto 本地配置包 runcoms.tar.gz（仅做提醒）
-if [ -f "$PWD/runcoms.tar.gz" ]; then
-    echo "检测到本地 Prezto 配置: $PWD/runcoms.tar.gz"
+# 提示当前目录是否包含 Prezto 本地配置包 prezto-config.tar.gz（仅做提醒）
+if [ -f "$PWD/prezto-config.tar.gz" ]; then
+    echo "检测到本地 Prezto 配置: $PWD/prezto-config.tar.gz"
 else
-    echo "警告: 未在当前目录找到 runcoms.tar.gz。若要安装 Zsh+Prezto，请将 runcoms.tar.gz 放在当前目录后再运行脚本。"
+    echo "警告: 未在当前目录找到 prezto-config.tar.gz。若要安装 Zsh+Prezto，请将 prezto-config.tar.gz 放在当前目录后再运行脚本。"
 fi
 
 # 强制以 root 运行
@@ -142,28 +142,32 @@ install_component() {
 
         # 获取自定义配置文件：仅从当前目录读取 runcoms.tar.gz
         TEMP_DIR=$(mktemp -d)
-        if [ -f "$PWD/runcoms.tar.gz" ]; then
-            cp "$PWD/runcoms.tar.gz" "$TEMP_DIR/config.tar.gz"
+        if [ -f "$PWD/prezto-config.tar.gz" ]; then
+            cp "$PWD/prezto-config.tar.gz" "$TEMP_DIR/config.tar.gz"
         else
-            echo "错误: 未找到 $PWD/runcoms.tar.gz — 请将 runcoms.tar.gz 放在当前目录后再运行此选项。"
+            echo "错误: 未找到 $PWD/prezto-config.tar.gz — 请将 prezto-config.tar.gz 放在当前目录后再运行此选项。"
             rm -rf "$TEMP_DIR"
             return 1
         fi
-        tar -xzf "$TEMP_DIR/config.tar.gz" -C "$TEMP_DIR"
-
-        # 支持压缩包中包含 runcoms/ 子目录或直接包含文件
-        RUNCOMS_DIR="$TEMP_DIR"
-        if [ -d "$TEMP_DIR/runcoms" ]; then
-            RUNCOMS_DIR="$TEMP_DIR/runcoms"
-        fi
+        tar -xzf "$TEMP_DIR/prezto-config.tar.gz" -C "$TEMP_DIR"
 
         # 只覆盖 Prezto runcoms 文件
         for rcfile in zshrc zlogin zlogout zpreztorc; do
-            if [ -f "$RUNCOMS_DIR/$rcfile" ]; then
-                cp "$RUNCOMS_DIR/$rcfile" "$USER_HOME/.$rcfile"
+            if [ -f "$TEMP_DIR/$rcfile" ]; then
+                cp "$TEMP_DIR/$rcfile" "$USER_HOME/.$rcfile"
                 chown "$USERNAME:$USERNAME" "$USER_HOME/.$rcfile"
             fi
         done
+
+        # 查找并安装自定义 prompt 主题（支持压缩包任意位置的 prompt 目录）
+        PROMPT_SRC=$(find "$TEMP_DIR" -type d -name prompt -print -quit || true)
+        if [ -n "$PROMPT_SRC" ]; then
+            PREZTO_PROMPT_DIR="$USER_HOME/.zprezto/modules/prompt"
+            mkdir -p "$PREZTO_PROMPT_DIR"
+            cp -r "$PROMPT_SRC/." "$PREZTO_PROMPT_DIR/"
+            chown -R "$USERNAME:$USERNAME" "$PREZTO_PROMPT_DIR"
+            echo "已安装自定义 Prezto prompt 主题到 $PREZTO_PROMPT_DIR"
+        fi
 
         # 创建 runcoms 符号链接（使用官方 Prezto runcoms），在 zsh 中运行以正确处理 :t
         sudo -u "$USERNAME" zsh -ic 'setopt EXTENDED_GLOB; for rcfile in $HOME/.zprezto/runcoms/^README.md(.N); do ln -sf "$rcfile" "$HOME/.${rcfile:t}"; done'
@@ -190,11 +194,19 @@ install_component() {
             fi
         fi
 
-        if ! dpkg -s docker-compose-plugin &>/dev/null 2>&1; then
-            apt install -y docker-compose-plugin
-            echo "Docker Compose 插件已安装，可使用 'docker compose' 命令"
+        # 优先检测现有的 docker compose
+        if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+            echo "检测到 'docker compose' 可用，跳过安装。"
         else
-            echo "Docker Compose 插件已存在"
+			read -p "Docker Compose 未安装，是否安装 Docker Compose? (y/N): " install_compose_choice
+			if [[ "$install_compose_choice" =~ ^[Yy]$ ]]; then
+				apt update
+				apt install -y docker-compose
+				echo "Docker Compose 已安装"
+			else
+				echo "未安装 Docker Compose"
+				return
+			fi
         fi
         installed+=("$component_name")
         ;;
