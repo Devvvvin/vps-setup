@@ -159,7 +159,7 @@ install_component() {
         # 获取自定义配置文件：仅从当前目录读取 runcoms.tar.gz
         TEMP_DIR=$(mktemp -d)
         if [ -f "$PWD/prezto-config.tar.gz" ]; then
-            cp "$PWD/prezto-config.tar.gz" "$TEMP_DIR/config.tar.gz"
+            cp "$PWD/prezto-config.tar.gz" "$TEMP_DIR/prezto-config.tar.gz"
         else
             echo "错误: 未找到 $PWD/prezto-config.tar.gz — 请将 prezto-config.tar.gz 放在当前目录后再运行此选项。"
             rm -rf "$TEMP_DIR"
