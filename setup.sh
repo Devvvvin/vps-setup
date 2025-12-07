@@ -79,7 +79,10 @@ install_component() {
     6) component_name="Fail2Ban" ;;
     7) component_name="Tailscale" ;;
     0) return 1 ;;
-    *) echo "无效选项: $1"; return ;;
+    *)
+        echo "无效选项: $1"
+        return
+        ;;
     esac
 
     # 检查组件是否已安装。
@@ -100,7 +103,7 @@ install_component() {
         if grep -qE '^[[:space:]]*Port[[:space:]]+' /etc/ssh/sshd_config >/dev/null 2>&1; then
             sed -ri "s/^[[:space:]]*Port[[:space:]]+.*/Port $SSH_PORT/" /etc/ssh/sshd_config
         else
-            echo "Port $SSH_PORT" >> /etc/ssh/sshd_config
+            echo "Port $SSH_PORT" >>/etc/ssh/sshd_config
         fi
 
         # 检查 SSH 配置语法
@@ -167,7 +170,7 @@ install_component() {
         fi
         tar -xzf "$TEMP_DIR/prezto-config.tar.gz" -C "$TEMP_DIR"
 
-        # 只覆盖 Prezto runcoms 文件
+        # 覆盖 Prezto runcoms 文件
         for rcfile in zshrc zlogin zlogout zpreztorc; do
             if [ -f "$TEMP_DIR/$rcfile" ]; then
                 cp "$TEMP_DIR/$rcfile" "$USER_HOME/.$rcfile"
@@ -185,12 +188,18 @@ install_component() {
             echo "已安装自定义 Prezto prompt 主题到 $PREZTO_PROMPT_DIR"
         fi
 
+        # 覆盖 .p10k.zsh
+        if [ -f "$TEMP_DIR/.p10k.zsh" ]; then
+            cp "$TEMP_DIR/.p10k.zsh" "$USER_HOME/.p10k.zsh"
+        fi
+
         # 创建 runcoms 符号链接（使用官方 Prezto runcoms），在 zsh 中运行以正确处理 :t
         sudo -u "$USERNAME" zsh -ic 'setopt EXTENDED_GLOB; for rcfile in $HOME/.zprezto/runcoms/^README.md(.N); do ln -sf "$rcfile" "$HOME/.${rcfile:t}"; done'
 
         # 设置 zsh 为默认 shell
         chsh -s /bin/zsh "$USERNAME"
-        chown -R "$USERNAME:$USERNAME" "$USER_HOME/.zprezto"
+        chown -R $USERNAME:$USERNAME "$USER_HOME/.zprezto"
+        chown $USERNAME:$USERNAME "$USER_HOME/.p10k.zsh"
         rm -rf "$TEMP_DIR"
         echo "Prezto 安装完成并应用本地自定义配置"
         echo "提示：设置 zsh 为默认 shell 后，需重新登录用户 $USERNAME 生效"
@@ -214,15 +223,15 @@ install_component() {
         if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
             echo "检测到 'docker compose' 可用，跳过安装。"
         else
-			read -p "Docker Compose 未安装，是否安装 Docker Compose? (y/N): " install_compose_choice
-			if [[ "$install_compose_choice" =~ ^[Yy]$ ]]; then
-				apt update
-				apt install -y docker-compose
-				echo "Docker Compose 已安装"
-			else
-				echo "未安装 Docker Compose"
-				return
-			fi
+            read -p "Docker Compose 未安装，是否安装 Docker Compose? (y/N): " install_compose_choice
+            if [[ "$install_compose_choice" =~ ^[Yy]$ ]]; then
+                apt update
+                apt install -y docker-compose
+                echo "Docker Compose 已安装"
+            else
+                echo "未安装 Docker Compose"
+                return
+            fi
         fi
         add_installed "$component_name"
         ;;
