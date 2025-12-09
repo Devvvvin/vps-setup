@@ -316,6 +316,9 @@ EOL
     7)
         curl -fsSL https://tailscale.com/install.sh | sh
         systemctl enable --now tailscaled
+        # 放行 tailscale0 网卡流量
+        ufw allow in on tailscale0
+        ufw allow out on tailscale0
         echo "Tailscale 已安装"
         add_installed "$component_name"
         ;;
