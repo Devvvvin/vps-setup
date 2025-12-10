@@ -30,8 +30,8 @@ USERNAME=devvin
 USER_HOME="/home/$USERNAME"
 
 # UFW 默认端口
-ALLOWED_TCP_PORTS=("$SSH_PORT" "80" "443" "3478" "8443")
-ALLOWED_UDP_PORTS=("$SSH_PORT" "80" "443" "3478" "8443")
+ALLOWED_TCP_PORTS=("22" "80" "443" "3478" "8443" "8000:9000")
+ALLOWED_UDP_PORTS=("22" "80" "443" "3478" "8443" "8000:9000")
 
 # ------------------------------
 # 已安装标记
@@ -87,7 +87,7 @@ set_user_password() {
 show_menu() {
     echo "=============================="
     echo "请选择要安装的组件（输入数字，多个用空格分隔）："
-    echo "1) 修改 SSH 端口为 $SSH_PORT"
+    echo "1) 配置 SSH：禁用 root 密码登录"
     echo "2) 新增用户 $USERNAME 并设置 sudo 免密码"
     echo "3) 安装 Zsh + Prezto（官方 Prezto + 本地配置）"
     echo "4) 安装 Docker + Docker Compose（系统包）"
@@ -319,7 +319,21 @@ install_component() {
         if ! command -v fail2ban-server &>/dev/null; then
             apt install -y fail2ban
         fi
-        cat >/etc/fail2ban/jail.local <<EOL
+    
+        # -------------------------------
+        # 创建 Docker 监控过滤器
+        # -------------------------------
+        cat >/etc/fail2ban/filter.d/docker-protect.conf <<'EOF'
+[Definition]
+# 匹配尝试访问敏感文件的请求
+failregex = <HOST> .*"(GET|POST).*(\.env|\.git/config|/config/|/\.ht|/wp-config.php|/adminer.php|\.ini|\.conf|/phpmyadmin/|/pma/|/mysql/|/backup/|/backups/|/dump/|/sql/|/db/|/database/).*HTTP.*" )"
+ignoreregex =
+EOF
+
+    # -------------------------------
+    # 写入 jail.local
+    # -------------------------------
+    cat >/etc/fail2ban/jail.local <<EOL
 [DEFAULT]
 bantime = 3600
 findtime = 600
@@ -328,17 +342,21 @@ backend = systemd
 
 [sshd]
 enabled = true
-port = $SSH_PORT
+port = 22
 logpath = /var/log/auth.log
 
 [docker]
-enabled = true
-port = all
-logpath = /var/lib/docker/containers/*/*.log
-# 注意：Docker 容器日志路径可能因系统配置不同而变化，若监控异常请检查路径
+enabled  = true
+filter   = docker-protect
+action   = iptables-allports[name=Docker-Protect]
+logpath  = /var/lib/docker/containers/*/*.log
+maxretry = 1
+bantime  = 3600
+findtime = 600
 EOL
+    
         systemctl enable --now fail2ban
-        echo "Fail2Ban 已安装并启用"
+        echo "Fail2Ban 已安装并启用（SSH + Docker 容器敏感文件访问）"
         add_installed "$component_name"
         ;;
     7)
