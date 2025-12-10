@@ -24,7 +24,8 @@ fi
 # ------------------------------
 # 配置参数
 # ------------------------------
-SSH_PORT=8022
+SSHD_CONFIG="/etc/ssh/sshd_config"
+BACKUP_FILE="/etc/ssh/sshd_config.bak.$(date +%F_%H%M%S)"
 USERNAME=devvin
 USER_HOME="/home/$USERNAME"
 
@@ -131,25 +132,52 @@ install_component() {
     # 执行具体安装逻辑
     case $1 in
     1)
-        # 更稳健地设置 SSH 端口：支持已存在的 Port 行或追加新的 Port 行
-        if grep -qE '^[[:space:]]*Port[[:space:]]+' /etc/ssh/sshd_config >/dev/null 2>&1; then
-            sed -ri "s/^[[:space:]]*Port[[:space:]]+.*/Port $SSH_PORT/" /etc/ssh/sshd_config
+        echo "配置 SSH：禁用 root 密码登录，检查公钥，不存在则自动生成"
+        SSHD_CONFIG="/etc/ssh/sshd_config"
+        BACKUP_FILE="/etc/ssh/sshd_config.bak.$(date +%F_%H%M%S)"
+        ROOT_SSH_DIR="/root/.ssh"
+        AUTH_KEYS="$ROOT_SSH_DIR/authorized_keys"
+        # 1. 备份配置
+        cp "$SSHD_CONFIG" "$BACKUP_FILE"
+        # 2. 禁止 root 密码登录（只允许密钥）
+        if grep -q "^PermitRootLogin" "$SSHD_CONFIG"; then
+            sed -i 's/^PermitRootLogin.*/PermitRootLogin prohibit-password/' "$SSHD_CONFIG"
         else
-            echo "Port $SSH_PORT" >>/etc/ssh/sshd_config
+            echo "PermitRootLogin prohibit-password" >> "$SSHD_CONFIG"
         fi
-
-        # 检查 SSH 配置语法
+        # 3. 准备 .ssh 目录
+        mkdir -p "$ROOT_SSH_DIR"
+        chmod 700 "$ROOT_SSH_DIR"
+        # 4. 检查是否已存在 authorized_keys
+        if [ ! -s "$AUTH_KEYS" ]; then
+            echo "未检测到 root 公钥，正在生成新密钥..."
+            ssh-keygen -t ed25519 -f /tmp/root_sshkey_tmp -N ""
+            PUB_KEY=$(cat /tmp/root_sshkey_tmp.pub)
+            PRIV_KEY=$(cat /tmp/root_sshkey_tmp)
+            echo "$PUB_KEY" >> "$AUTH_KEYS"
+            chmod 600 "$AUTH_KEYS"
+            rm -f /tmp/root_sshkey_tmp /tmp/root_sshkey_tmp.pub
+            echo ""
+            echo "================= 私钥开始 ================="
+            echo "$PRIV_KEY"
+            echo "================= 私钥结束 ================="
+            echo ""
+            echo "⚠️ 请立即复制保存该私钥！后续将无法再次显示！"
+        else
+            echo "✅ 已存在 root 公钥，跳过生成"
+        fi
+        # 5. 验证配置
         if ! sshd -t >/dev/null 2>&1; then
-            echo "警告: SSH 配置语法错误，请检查 /etc/ssh/sshd_config"
+            echo "❌ SSH 配置语法错误，已回滚"
+            cp "$BACKUP_FILE" "$SSHD_CONFIG"
             return 1
         fi
-
-        # 尝试重启 ssh 服务，兼容不同系统的服务名
+        # 6. 重启 SSH 服务
         if systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null; then
-            echo "SSH端口已修改为 $SSH_PORT"
+            echo "✅ SSH 配置完成"
             add_installed "$component_name"
         else
-            echo "已更新 /etc/ssh/sshd_config，但重启 ssh 服务失败，请手动重启并检查配置。"
+            echo "❌ SSH 服务重启失败，请手动检查"
         fi
         ;;
     2)
