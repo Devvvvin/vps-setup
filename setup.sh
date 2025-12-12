@@ -132,31 +132,44 @@ install_component() {
     # 执行具体安装逻辑
     case $1 in
     1)
-        echo "配置 SSH：禁用 root 密码登录，检查公钥，不存在则自动生成"
+        echo "配置 SSH：禁用 root 密码登录，允许普通用户密码登录"
+
         SSHD_CONFIG="/etc/ssh/sshd_config"
         BACKUP_FILE="/etc/ssh/sshd_config.bak.$(date +%F_%H%M%S)"
         ROOT_SSH_DIR="/root/.ssh"
         AUTH_KEYS="$ROOT_SSH_DIR/authorized_keys"
+
         # 1. 备份配置
         cp "$SSHD_CONFIG" "$BACKUP_FILE"
-        # 2. 禁止 root 密码登录（只允许密钥）
+
+        # 2. 禁止 root 密码登录（安全）
         if grep -q "^PermitRootLogin" "$SSHD_CONFIG"; then
             sed -i 's/^PermitRootLogin.*/PermitRootLogin prohibit-password/' "$SSHD_CONFIG"
         else
-            echo "PermitRootLogin prohibit-password" >> "$SSHD_CONFIG"
+            echo "PermitRootLogin prohibit-password" >>"$SSHD_CONFIG"
         fi
-        # 3. 准备 .ssh 目录
+
+        # 3. 开启普通用户的密码登录
+        if grep -q "^PasswordAuthentication" "$SSHD_CONFIG"; then
+            sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' "$SSHD_CONFIG"
+        else
+            echo "PasswordAuthentication yes" >>"$SSHD_CONFIG"
+        fi
+
+        # 4. 准备 root .ssh 目录
         mkdir -p "$ROOT_SSH_DIR"
         chmod 700 "$ROOT_SSH_DIR"
-        # 4. 检查是否已存在 authorized_keys
+
+        # 5. 检查是否已存在 authorized_keys
         if [ ! -s "$AUTH_KEYS" ]; then
             echo "未检测到 root 公钥，正在生成新密钥..."
             ssh-keygen -t ed25519 -f /tmp/root_sshkey_tmp -N ""
             PUB_KEY=$(cat /tmp/root_sshkey_tmp.pub)
             PRIV_KEY=$(cat /tmp/root_sshkey_tmp)
-            echo "$PUB_KEY" >> "$AUTH_KEYS"
+            echo "$PUB_KEY" >>"$AUTH_KEYS"
             chmod 600 "$AUTH_KEYS"
             rm -f /tmp/root_sshkey_tmp /tmp/root_sshkey_tmp.pub
+
             echo ""
             echo "================= 私钥开始 ================="
             echo "$PRIV_KEY"
@@ -166,16 +179,17 @@ install_component() {
         else
             echo "✅ 已存在 root 公钥，跳过生成"
         fi
-        # 5. 验证配置
+
+        # 6. 验证配置
         if ! sshd -t >/dev/null 2>&1; then
             echo "❌ SSH 配置语法错误，已回滚"
             cp "$BACKUP_FILE" "$SSHD_CONFIG"
             return 1
         fi
-        # 6. 重启 SSH 服务
+
+        # 7. 重启 SSH 服务
         if systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null; then
             echo "✅ SSH 配置完成"
-            add_installed "$component_name"
         else
             echo "❌ SSH 服务重启失败，请手动检查"
         fi
@@ -313,7 +327,7 @@ install_component() {
         if ! command -v fail2ban-server &>/dev/null; then
             apt install -y fail2ban
         fi
-    
+
         # -------------------------------
         # 创建 Docker 监控过滤器
         # -------------------------------
@@ -324,10 +338,10 @@ failregex = <HOST> .*"(GET|POST).*(\.env|\.git/config|/config/|/\.ht|/wp-config.
 ignoreregex =
 EOF
 
-    # -------------------------------
-    # 写入 jail.local
-    # -------------------------------
-    cat >/etc/fail2ban/jail.local <<EOL
+        # -------------------------------
+        # 写入 jail.local
+        # -------------------------------
+        cat >/etc/fail2ban/jail.local <<EOL
 [DEFAULT]
 bantime = 3600
 findtime = 600
@@ -348,7 +362,7 @@ maxretry = 1
 bantime  = 3600
 findtime = 600
 EOL
-    
+
         systemctl enable --now fail2ban
         echo "Fail2Ban 已安装并启用（SSH + Docker 容器敏感文件访问）"
         add_installed "$component_name"
