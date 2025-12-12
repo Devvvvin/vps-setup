@@ -6,8 +6,8 @@
 set -e
 
 # 公共 DNS 列表
-INTERNATIONAL_DNS=("1.1.1.1" "8.8.8.8")
-DOMESTIC_DNS=("223.5.5.5" "114.114.114.114")
+INTERNATIONAL_DNS=("8.8.8.8")
+DOMESTIC_DNS=("223.5.5.5")
 
 # 测试域名
 TEST_DOMAIN_INTL="google.com"
@@ -66,9 +66,9 @@ fix_dns() {
         for dns in "${dns_list[@]}"; do
             echo "nameserver $dns"
         done
-    } >/etc/resolv.conf
+    } >>/etc/resolv.conf
 
-    echo "DNS 已修复：${dns_list[*]}"
+    echo "DNS 已追加：${dns_list[*]}"
 }
 
 # ------------------------------

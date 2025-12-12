@@ -217,7 +217,7 @@ install_component() {
 
         # 克隆官方 Prezto
         if [ ! -d "$USER_HOME/.zprezto" ]; then
-            sudo -u "$USERNAME" git clone --recursive https://github.com/sorin-ionescu/prezto.git "$USER_HOME/.zprezto"
+            sudo -u "$USERNAME" git clone --recursive --progress https://github.com/sorin-ionescu/prezto.git "$USER_HOME/.zprezto"
             echo "官方 Prezto 仓库已克隆"
         fi
 
@@ -232,12 +232,6 @@ install_component() {
         if [ -d "$LOCAL_PREZTO_DIR/runcoms" ]; then
             cp -r "$LOCAL_PREZTO_DIR/runcoms/." "$USER_HOME/.zprezto/runcoms/"
             chown -R "$USERNAME:$USERNAME" "$USER_HOME/.zprezto/runcoms"
-        fi
-
-        # 覆盖 prompt 模块
-        if [ -d "$LOCAL_PREZTO_DIR/modules/prompt" ]; then
-            cp -r "$LOCAL_PREZTO_DIR/modules/prompt/." "$USER_HOME/.zprezto/modules/prompt/"
-            chown -R "$USERNAME:$USERNAME" "$USER_HOME/.zprezto/modules/prompt"
         fi
 
         # 覆盖 .p10k.zsh
@@ -262,7 +256,7 @@ install_component() {
         # 设置 zsh 为默认 shell
         chsh -s /bin/zsh "$USERNAME"
 
-        echo "Prezto 安装完成并应用本地自定义配置（runcoms + modules/prompt + .p10k.zsh）"
+        echo "Prezto 安装完成并应用本地自定义配置（runcoms + .p10k.zsh）"
         echo "请重新登录用户 $USERNAME 生效。"
         add_installed "$component_name"
         ;;
