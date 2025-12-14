@@ -316,27 +316,38 @@ configure_ufw_base() {
 # ==========================================
 configure_ssh() {
 	if ! id "$TARGET_USER" &>/dev/null; then
-		error "请先创建用户"
+		error "请先创建用户 $TARGET_USER"
 		return 1
 	fi
 
 	local drop_in_dir="/etc/ssh/sshd_config.d"
 	local custom_config="$drop_in_dir/99-hardened.conf"
 	local ssh_config="/etc/ssh/sshd_config"
+	local user_ssh_dir home_dir
 
-	# 2. 准备 Drop-in 配置
-    if [ ! -d "$drop_in_dir" ]; then
-	    mkdir -p "$drop_in_dir"
-    fi
-	if ! grep -q "^Include /etc/ssh/sshd_config.d/\*.conf" "$ssh_config"; then
+	# 获取用户家目录
+	home_dir=$(eval echo "~$TARGET_USER")
+	user_ssh_dir="$home_dir/.ssh"
+
+	# 创建 Drop-in 目录
+	if [ ! -d "$drop_in_dir" ]; then
+		mkdir -p "$drop_in_dir"
+		echo "创建 SSH Drop-in 目录 $drop_in_dir"
+	fi
+
+	# 确保 Include 行存在且唯一
+	if ! grep -Eq "^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config.d/\*\.conf" "$ssh_config"; then
 		echo "Include /etc/ssh/sshd_config.d/*.conf" >>"$ssh_config"
 	fi
 
-    if [ ! -f "$custom_config" ]; then
-	    touch "$custom_config"
-    fi
+	# 创建加固配置文件
+	if [ ! -f "$custom_config" ]; then
+		touch "$custom_config"
+		chmod 600 "$custom_config"
+		echo "创建 SSH 加固配置文件 $custom_config"
+	fi
 
-	# 3. 写入配置
+	# 写入基础配置
 	cat >"$custom_config" <<EOF
 Port $SSH_PORT
 PermitRootLogin prohibit-password
@@ -344,12 +355,19 @@ PasswordAuthentication no
 PubkeyAuthentication yes
 EOF
 
-	# 如果没 Key，强制开密码登录
-	if [ ! -s "/home/$TARGET_USER/.ssh/authorized_keys" ]; then
+	# 如果没有公钥，允许密码登录
+	if [ ! -f "$user_ssh_dir/authorized_keys" ] || [ ! -s "$user_ssh_dir/authorized_keys" ]; then
 		warn "未检测到公钥，强制开启密码登录以防锁死"
-		sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' "$custom_config"
+		# 如果已有 PasswordAuthentication no，替换；否则追加
+		if grep -q "^PasswordAuthentication no" "$custom_config"; then
+			sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/' "$custom_config"
+		else
+			echo "PasswordAuthentication yes" >>"$custom_config"
+		fi
 	fi
-	log "ssh 加固完成"
+
+	systemctl restart sshd || warn "sshd 重启失败，请手动检查"
+	log "SSH 加固完成"
 }
 
 # ==========================================
