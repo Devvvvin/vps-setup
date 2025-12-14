@@ -305,7 +305,7 @@ configure_ufw_base() {
 		for p in $port_item; do ufw allow "$p"/udp; done
 	done
 
-	echo "放行 TCP: ${TCP_PORTS[*]}, UDP: ${UDP_PORTS[*]}"
+	echo "放行 TCP: ${current_port} ${TCP_PORTS[*]}, UDP: ${UDP_PORTS[*]}"
 
 	ufw --force enable
 	log "UFW 已启用"
