@@ -1,395 +1,401 @@
 #!/bin/bash
-# Debian 12/13 一键初始化脚本（循环菜单式安装向导）
-# 版本: 1.0.0
-# 日期: 2025-12-07
-# 注意：请以 root 用户执行
-set -e
+set -u # 变量未定义报错
 
-# ------------------------------
-# 前置检查
-# ------------------------------
-# 提示当前目录是否包含 Prezto 本地配置目录 `prezto-config`（仅做提醒）
-if [ -d "$PWD/prezto-config" ]; then
-    echo "检测到本地 Prezto 配置目录: $PWD/prezto-config"
-else
-    echo "警告: 未在当前目录找到 prezto-config 目录。若要安装 Zsh+Prezto，请将 prezto-config 目录放在当前目录后再运行脚本。"
-fi
+# ==========================================
+# 服务器全能初始化脚本 (加固 + 全模块版)
+# ==========================================
 
-# 强制以 root 运行
-if [ "$EUID" -ne 0 ]; then
-    echo "请以 root 用户运行此脚本。"
-    exit 1
-fi
+# --- 全局配置 (可修改此处或通过环境变量覆盖) ---
+TARGET_USER="${TARGET_USER:-devvin}"                           # 目标用户名
+SSH_PORT="${SSH_PORT:-22}"                                     # 目标 SSH 端口
+TCP_PORTS=("${TCP_PORTS[@]:-80 443 3478 8000:9000}")           # 额外开放的 TCP 端口
+UDP_PORTS=("${UDP_PORTS[@]:-443 3478 8000:9000}")              # 额外开放的 UDP 端口
+DOCKER_MIN_VERSION="${DOCKER_MIN_VERSION:-20.10}"              # 最低 Docker 版本要求
+PREZTO_CONFIG_DIR="${PREZTO_CONFIG_DIR:-$(pwd)/prezto-config}" # Prezto 配置目录
+TAILSCALE_AUTH_KEY="${TAILSCALE_AUTH_KEY:-}"                   # Tailscale 认证密钥 (可选)
 
-# ------------------------------
-# 配置参数
-# ------------------------------
-SSHD_CONFIG="/etc/ssh/sshd_config"
-BACKUP_FILE="/etc/ssh/sshd_config.bak.$(date +%F_%H%M%S)"
-USERNAME=devvin
-USER_HOME="/home/$USERNAME"
+# 颜色定义
+RED='\033[31m'
+GREEN='\033[32m'
+YELLOW='\033[33m'
+BLUE='\033[34m'
+NC='\033[0m'
 
-# UFW 默认端口
-ALLOWED_TCP_PORTS=("22" "80" "443" "3478" "8443" "8000:9000")
-ALLOWED_UDP_PORTS=("22" "80" "443" "3478" "8443" "8000:9000")
+# --- 基础工具函数 ---
+log() { echo -e "${GREEN}[+]${NC} $*"; }
+info() { echo -e "${BLUE}[i]${NC} $*"; }
+warn() { echo -e "${YELLOW}[!]${NC} $*"; }
+error() { echo -e "${RED}[-]${NC} $*"; }
 
-# ------------------------------
-# 已安装标记
-# ------------------------------
-installed=()
-
-# Helper: add component to installed list if not present
-add_installed() {
-    local name="$1"
-    for it in "${installed[@]}"; do
-        if [ "$it" = "$name" ]; then
-            return
-        fi
-    done
-    installed+=("$name")
+require_root() {
+	if [ "$EUID" -ne 0 ]; then
+		error "请以 root 权限运行此脚本"
+		exit 1
+	fi
 }
 
-# Prompt interactively for a password and set it for the given user
-set_user_password() {
-    local user="$1"
-    # Require chpasswd available
-    if ! command -v chpasswd >/dev/null 2>&1; then
-        echo "警告: 系统上没有 chpasswd，无法为用户设置密码。"
-        return 1
-    fi
-    while true; do
-        read -s -p "为用户 $user 设置密码: " passwd1
-        echo
-        read -s -p "请再次输入密码以确认: " passwd2
-        echo
-        if [ -z "$passwd1" ]; then
-            echo "密码不能为空，请重试。"
-            continue
-        fi
-        if [ "$passwd1" != "$passwd2" ]; then
-            echo "两次输入不匹配，请重试。"
-            continue
-        fi
-        echo "$user:$passwd1" | chpasswd
-        if [ $? -eq 0 ]; then
-            echo "密码已设置。"
-            return 0
-        else
-            echo "设置密码失败，请检查系统工具。"
-            return 1
-        fi
-    done
+# --- 环境检测 ---
+is_wsl() { grep -qE "(Microsoft|WSL)" /proc/version &>/dev/null; }
+
+# ==========================================
+# 模块 1: 基础用户管理
+# ==========================================
+install_user() {
+	info "检查用户配置..."
+	if id "$TARGET_USER" &>/dev/null; then
+		log "用户 $TARGET_USER 已存在"
+	else
+		useradd -m -s /bin/bash -G sudo "$TARGET_USER"
+		log "用户 $TARGET_USER 创建成功"
+		log "请设置密码:"
+		passwd "$TARGET_USER"
+	fi
 }
 
-# ------------------------------
-# 菜单显示函数
-# ------------------------------
-show_menu() {
-    echo "=============================="
-    echo "请选择要安装的组件（输入数字，多个用空格分隔）："
-    echo "1) 配置 SSH：禁用 root 密码登录"
-    echo "2) 新增用户 $USERNAME 并设置 sudo 免密码"
-    echo "3) 安装 Zsh + Prezto（官方 Prezto + 本地配置）"
-    echo "4) 安装 Docker + Docker Compose（系统包）"
-    echo "5) 安装并配置 UFW（TCP/UDP）"
-    echo "6) 安装并配置 Fail2Ban"
-    echo "7) 安装 Tailscale"
-    echo "0) 完成并退出"
-    echo "=============================="
+# ==========================================
+# 模块 2: DNS 安全配置 (Systemd/WSL 兼容)
+# ==========================================
+configure_dns() {
+	info "开始配置 DNS..."
+
+	if is_wsl; then
+		warn "检测到 WSL 环境，跳过 DNS 修改以防断网。"
+		return
+	fi
+
+	# 测试解析结果
+	local TEST_DOMAIN_INTL="google.com"
+	local TEST_DOMAIN_CN="baidu.com"
+	echo "测试解析结果："
+	if ! ping -c 3 "$TEST_DOMAIN_INTL" >/dev/null 2>&1; then
+		echo "⚠️ 国际域名解析失败: $TEST_DOMAIN_INTL"
+	else
+		echo "✅ 国际域名解析成功: $TEST_DOMAIN_INTL"
+	fi
+
+	if ! ping -c 3 "$TEST_DOMAIN_CN" >/dev/null 2>&1; then
+		echo "⚠️ 国内域名解析失败: $TEST_DOMAIN_CN"
+	else
+		echo "✅ 国内域名解析成功: $TEST_DOMAIN_CN"
+	fi
+
+	read -rp "是否修改DNS配置？(y/N): " confirm
+	if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+		echo "取消操作"
+		return 0
+	fi
+
+	# 解锁文件防止修改失败
+	lsattr /etc/resolv.conf 2>/dev/null | grep -q "i" && chattr -i /etc/resolv.conf
+
+	local dns_list="8.8.8.8 1.1.1.1 223.5.5.5"
+
+	if systemctl is-active systemd-resolved &>/dev/null; then
+		local conf="/etc/systemd/resolved.conf"
+		cp "$conf" "${conf}.bak"
+		# 使用 sed 修改配置
+		grep -q "^DNS=" "$conf" && sed -i "s/^DNS=.*/DNS=$dns_list/" "$conf" || echo "DNS=$dns_list" >>"$conf"
+		grep -q "^FallbackDNS=" "$conf" || echo "FallbackDNS=114.114.114.114" >>"$conf"
+
+		systemctl restart systemd-resolved
+		log "Systemd-resolved DNS 已更新"
+	else
+		# 传统方式
+		cp /etc/resolv.conf /etc/resolv.conf.bak
+		[ -L /etc/resolv.conf ] && unlink /etc/resolv.conf
+		echo -e "nameserver 8.8.8.8\nnameserver 1.1.1.1" >/etc/resolv.conf
+		log "DNS 已写入 /etc/resolv.conf"
+	fi
 }
 
-# ------------------------------
-# 安装组件函数
-# ------------------------------
-install_component() {
-    # 定义组件名称映射
-    case $1 in
-    1) component_name="SSH端口" ;;
-    2) component_name="新增用户" ;;
-    3) component_name="Zsh+Prezto" ;;
-    4) component_name="Docker + Docker Compose" ;;
-    5) component_name="UFW" ;;
-    6) component_name="Fail2Ban" ;;
-    7) component_name="Tailscale" ;;
-    0) return 1 ;;
-    *)
-        echo "无效选项: $1"
-        return
-        ;;
-    esac
+# ==========================================
+# 模块 3: Zsh + Prezto
+# ==========================================
+install_zsh() {
+	if ! id "$TARGET_USER" &>/dev/null; then
+		error "用户不存在，请先执行步骤 1"
+		return 1
+	fi
 
-    # 检查组件是否已安装。
-    # 仅对 1 和 2 项（SSH 端口、新增用户）在已安装时跳过，其他项允许重新安装/覆盖。
-    if [[ " ${installed[*]} " =~ ${component_name} ]]; then
-        if [ "$1" -eq 1 ] || [ "$1" -eq 2 ]; then
-            echo "组件 $component_name 已安装，跳过"
-            return
-        else
-            echo "组件 $component_name 已安装，继续执行以重新安装/覆盖..."
-        fi
-    fi
+	info "安装 Zsh 和 Git..."
+	apt-get update && apt-get install -y zsh git curl
 
-    # 执行具体安装逻辑
-    case $1 in
-    1)
-        echo "配置 SSH：禁用 root 密码登录，允许普通用户密码登录"
+	local home="/home/$TARGET_USER"
+	local target="$home/.zprezto"
+	local tmp="$target.tmp"
 
-        SSHD_CONFIG="/etc/ssh/sshd_config"
-        BACKUP_FILE="/etc/ssh/sshd_config.bak.$(date +%F_%H%M%S)"
-        ROOT_SSH_DIR="/root/.ssh"
-        AUTH_KEYS="$ROOT_SSH_DIR/authorized_keys"
+	rm -rf "$tmp"
+	sudo -u "$TARGET_USER" git clone --recursive \
+		https://github.com/sorin-ionescu/prezto.git "$tmp" || {
+		rm -rf "$tmp"
+		error "Prezto clone 失败"
+		return 1
+	}
 
-        # 1. 备份配置
-        cp "$SSHD_CONFIG" "$BACKUP_FILE"
+	rm -rf "$target"
+	mv "$tmp" "$target"
 
-        # 2. 禁止 root 密码登录（安全）
-        if grep -q "^PermitRootLogin" "$SSHD_CONFIG"; then
-            sed -i 's/^PermitRootLogin.*/PermitRootLogin prohibit-password/' "$SSHD_CONFIG"
-        else
-            echo "PermitRootLogin prohibit-password" >>"$SSHD_CONFIG"
-        fi
+	cp -r "$PREZTO_CONFIG_DIR/runcoms/." "$target/runcoms/"
+	cp "$PREZTO_CONFIG_DIR/.p10k.zsh" "$home/.p10k.zsh"
 
-        # 3. 开启普通用户的密码登录
-        if grep -q "^PasswordAuthentication" "$SSHD_CONFIG"; then
-            sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' "$SSHD_CONFIG"
-        else
-            echo "PasswordAuthentication yes" >>"$SSHD_CONFIG"
-        fi
+	# 创建 runcoms 符号链接
+	for rcfile in "$target/runcoms/"*; do
+		filename=$(basename "$rcfile")
+		if [ "$filename" != "README.md" ]; then
+			ln -sf "$rcfile" "$home/.$filename"
+			chown "$TARGET_USER:$TARGET_USER" "$home/.$filename"
+		fi
+	done
 
-        # 4. 准备 root .ssh 目录
-        mkdir -p "$ROOT_SSH_DIR"
-        chmod 700 "$ROOT_SSH_DIR"
+	# 禁用 zsh-newuser-install
+	echo 'export DISABLE_ZSH_NEWUSER_INSTALL=true' >>"$home/.zshrc"
+	chown "$TARGET_USER:$TARGET_USER" "$home/.zshrc"
 
-        # 5. 检查是否已存在 authorized_keys
-        if [ ! -s "$AUTH_KEYS" ]; then
-            echo "未检测到 root 公钥，正在生成新密钥..."
-            ssh-keygen -t ed25519 -f /tmp/root_sshkey_tmp -N ""
-            PUB_KEY=$(cat /tmp/root_sshkey_tmp.pub)
-            PRIV_KEY=$(cat /tmp/root_sshkey_tmp)
-            echo "$PUB_KEY" >>"$AUTH_KEYS"
-            chmod 600 "$AUTH_KEYS"
-            rm -f /tmp/root_sshkey_tmp /tmp/root_sshkey_tmp.pub
+	chown -R "$TARGET_USER:$TARGET_USER" "$home"
+	chsh -s /bin/zsh "$TARGET_USER"
 
-            echo ""
-            echo "================= 私钥开始 ================="
-            echo "$PRIV_KEY"
-            echo "================= 私钥结束 ================="
-            echo ""
-            echo "⚠️ 请立即复制保存该私钥！后续将无法再次显示！"
-        else
-            echo "✅ 已存在 root 公钥，跳过生成"
-        fi
+	log "Zsh + Prezto 安装完成"
+}
 
-        # 6. 验证配置
-        if ! sshd -t >/dev/null 2>&1; then
-            echo "❌ SSH 配置语法错误，已回滚"
-            cp "$BACKUP_FILE" "$SSHD_CONFIG"
-            return 1
-        fi
+# ==========================================
+# 模块 4: Docker
+# ==========================================
+need_official_docker() {
+	local cur
+	cur=$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo 0)
+	dpkg --compare-versions "$cur" lt "$DOCKER_MIN_VERSION"
+}
+install_docker() {
+	if command -v docker &>/dev/null; then
+		log "Docker 已安装"
+		if ! need_official_docker; then
+			log "Docker 已满足版本要求"
+			return
+		else
+			info "当前 Docker 版本过低，正在升级..."
+		fi
+	else
+		info "正在安装 Docker..."
+		curl -fsSL https://get.docker.com | sh
+	fi
 
-        # 7. 重启 SSH 服务
-        if systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null; then
-            echo "✅ SSH 配置完成"
-        else
-            echo "❌ SSH 服务重启失败，请手动检查"
-        fi
-        ;;
-    2)
-        if ! id "$USERNAME" &>/dev/null; then
-            useradd -m -s /bin/bash "$USERNAME"
-            if [ ! -f /etc/sudoers.d/90-$USERNAME ]; then
-                echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/90-$USERNAME
-                chmod 440 /etc/sudoers.d/90-$USERNAME
-            fi
-            USER_HOME=$(eval echo "~$USERNAME")
-            # 交互式设置用户密码
-            set_user_password "$USERNAME"
-            echo "用户 $USERNAME 创建完成并设置 sudo 免密码"
-            add_installed "$component_name"
-        else
-            echo "用户 $USERNAME 已存在"
-        fi
-        ;;
-    3)
-        # 安装 Zsh + Prezto
-        # 确保目标用户存在（若不存在则自动创建并配置 sudo 免密码）
-        if ! id "$USERNAME" &>/dev/null; then
-            echo "用户 $USERNAME 不存在，正在创建..."
-            useradd -m -s /bin/bash "$USERNAME"
-            echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/90-"$USERNAME"
-            chmod 440 /etc/sudoers.d/90-"$USERNAME"
-            set_user_password "$USERNAME"
-        fi
-        USER_HOME=$(eval echo "~$USERNAME")
-
-        # 安装 Zsh 和 Git
-        if ! command -v zsh &>/dev/null; then
-            apt update
-            apt install -y zsh git curl
-            echo "Zsh 已安装"
-        fi
-
-        # 克隆官方 Prezto
-        if [ ! -d "$USER_HOME/.zprezto" ]; then
-            sudo -u "$USERNAME" git clone --recursive --progress https://github.com/sorin-ionescu/prezto.git "$USER_HOME/.zprezto"
-            echo "官方 Prezto 仓库已克隆"
-        fi
-
-        # 使用本地 prezto-config 目录（无需压缩包）
-        LOCAL_PREZTO_DIR="$PWD/prezto-config"
-        if [ ! -d "$LOCAL_PREZTO_DIR" ]; then
-            echo "错误: 未找到目录 $LOCAL_PREZTO_DIR"
-            return 1
-        fi
-
-        # 覆盖 runcoms
-        if [ -d "$LOCAL_PREZTO_DIR/runcoms" ]; then
-            cp -r "$LOCAL_PREZTO_DIR/runcoms/." "$USER_HOME/.zprezto/runcoms/"
-            chown -R "$USERNAME:$USERNAME" "$USER_HOME/.zprezto/runcoms"
-        fi
-
-        # 覆盖 .p10k.zsh
-        if [ -f "$LOCAL_PREZTO_DIR/.p10k.zsh" ]; then
-            cp "$LOCAL_PREZTO_DIR/.p10k.zsh" "$USER_HOME/.p10k.zsh"
-            chown "$USERNAME:$USERNAME" "$USER_HOME/.p10k.zsh"
-        fi
-
-        # 创建 runcoms 符号链接
-        for rcfile in "$USER_HOME/.zprezto/runcoms/"*; do
-            filename=$(basename "$rcfile")
-            if [ "$filename" != "README.md" ]; then
-                ln -sf "$rcfile" "$USER_HOME/.$filename"
-                chown "$USERNAME:$USERNAME" "$USER_HOME/.$filename"
-            fi
-        done
-
-        # 禁用 zsh-newuser-install
-        echo 'export DISABLE_ZSH_NEWUSER_INSTALL=true' >>"$USER_HOME/.zshrc"
-        chown "$USERNAME:$USERNAME" "$USER_HOME/.zshrc"
-
-        # 设置 zsh 为默认 shell
-        chsh -s /bin/zsh "$USERNAME"
-
-        echo "Prezto 安装完成并应用本地自定义配置（runcoms + .p10k.zsh）"
-        echo "请重新登录用户 $USERNAME 生效。"
-        add_installed "$component_name"
-        ;;
-    4)
-        # 安装 Docker + Docker Compose（系统包）
-        if ! command -v docker &>/dev/null; then
-            read -p "Docker 未安装，是否安装 Docker? (y/N): " install_docker_choice
-            if [[ "$install_docker_choice" =~ ^[Yy]$ ]]; then
-                apt update
-                apt install -y docker.io
-                systemctl enable --now docker
-                echo "Docker 已安装并启动"
-            else
-                echo "未安装 Docker，将无法使用 Docker Compose"
-            fi
-        fi
-
-        # 优先检测现有的 docker compose
-        if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
-            echo "检测到 'docker compose' 可用，跳过安装。"
-        else
-            read -p "Docker Compose 未安装，是否安装 Docker Compose? (y/N): " install_compose_choice
-            if [[ "$install_compose_choice" =~ ^[Yy]$ ]]; then
-                apt update
-                apt install -y docker-compose
-                echo "Docker Compose 已安装"
-            else
-                echo "未安装 Docker Compose"
-                return
-            fi
-        fi
-        add_installed "$component_name"
-        ;;
-    5)
-        if ! command -v ufw &>/dev/null; then
-            apt install -y ufw
-        fi
-        echo "警告: 这将重置现有的 UFW 规则并应用默认策略。"
-        read -p "确定要继续并重置 UFW 吗? (y/N): " ufw_confirm
-        if [[ "$ufw_confirm" =~ ^[Yy]$ ]]; then
-            ufw --force reset
-            ufw default deny incoming
-            ufw default allow outgoing
-            for port in "${ALLOWED_TCP_PORTS[@]}"; do ufw allow "$port"/tcp; done
-            for port in "${ALLOWED_UDP_PORTS[@]}"; do ufw allow "$port"/udp; done
-            ufw --force enable
-            echo "UFW 已启用，放行 TCP: ${ALLOWED_TCP_PORTS[*]}, UDP: ${ALLOWED_UDP_PORTS[*]}"
-            add_installed "$component_name"
-        else
-            echo "已取消 UFW 配置"
-        fi
-        ;;
-    6)
-        if ! command -v fail2ban-server &>/dev/null; then
-            apt install -y fail2ban
-        fi
-
-        # -------------------------------
-        # 创建 Docker 监控过滤器
-        # -------------------------------
-        cat >/etc/fail2ban/filter.d/docker-protect.conf <<'EOF'
-[Definition]
-# 匹配尝试访问敏感文件的请求
-failregex = <HOST> .*"(GET|POST).*(\.env|\.git/config|/config/|/\.ht|/wp-config.php|/adminer.php|\.ini|\.conf|/phpmyadmin/|/pma/|/mysql/|/backup/|/backups/|/dump/|/sql/|/db/|/database/).*HTTP.*" )"
-ignoreregex =
+	# 限制日志大小
+	local daemon_json="/etc/docker/daemon.json"
+	if [ ! -f "$daemon_json" ]; then
+		info "创建 Docker 配置文件 $daemon_json"
+		mkdir -p "$(dirname "$daemon_json")"
+		touch "$daemon_json"
+	fi
+	# 添加日志配置
+	if ! grep -q '"log-driver": "json-file"' "$daemon_json"; then
+		info "添加 Docker 日志配置到 $daemon_json"
+		cat >>"$daemon_json" <<EOF
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "50m",
+    "max-file": "5"
+  }
+}
 EOF
+	fi
 
-        # -------------------------------
-        # 写入 jail.local
-        # -------------------------------
-        cat >/etc/fail2ban/jail.local <<EOL
+	systemctl enable --now docker
+
+	# 确保用户在 docker 组
+	if ! id -nG "$TARGET_USER" | grep -qw docker; then
+		usermod -aG docker "$TARGET_USER"
+		log "用户 $TARGET_USER 已加入 Docker 组 (需重新登录生效)"
+	fi
+}
+
+# ==========================================
+# 模块 5: Fail2Ban (自动联动 SSH 端口)
+# ==========================================
+install_fail2ban() {
+	info "安装 Fail2Ban..."
+	if ! command -v fail2ban-server &>/dev/null; then
+		apt install -y fail2ban
+	fi
+
+	# 生成配置
+	if [ ! -f "/etc/fail2ban/jail.local" ]; then
+		info "配置 Jail 规则 (保护ssh端口: $SSH_PORT)..."
+		cat >/etc/fail2ban/jail.local <<EOF
 [DEFAULT]
-bantime = 3600
-findtime = 600
+bantime = 1h
+findtime = 10m
 maxretry = 5
 backend = systemd
 
 [sshd]
 enabled = true
-port = 22
-logpath = /var/log/auth.log
+port = ssh
+logpath = %(sshd_log)s
+filter = sshd
+EOF
+	fi
 
-[docker]
-enabled  = true
-filter   = docker-protect
-action   = iptables-allports[name=Docker-Protect]
-logpath  = /var/lib/docker/containers/*/*.log
-maxretry = 1
-bantime  = 3600
-findtime = 600
-EOL
+	# 拷贝自定义配置文件（如果有）
+	if [ -d "fail2ban/jail.d" ]; then
+		info "拷贝自定义配置文件..."
+		mkdir -p /etc/fail2ban/jail.d
+		cp fail2ban/jail.d/* /etc/fail2ban/jail.d/
+	fi
 
-        systemctl enable --now fail2ban
-        echo "Fail2Ban 已安装并启用（SSH + Docker 容器敏感文件访问）"
-        add_installed "$component_name"
-        ;;
-    7)
-        curl -fsSL https://tailscale.com/install.sh | sh
-        systemctl enable --now tailscaled
-        # 放行 tailscale0 网卡流量
-        ufw allow in on tailscale0
-        ufw allow out on tailscale0
-        echo "Tailscale 已安装"
-        add_installed "$component_name"
-        ;;
-    esac
+	# 拷贝自定义 filter 文件（如果有）
+	if [ -d "fail2ban/filter.d" ]; then
+		info "拷贝自定义 filter 文件..."
+		mkdir -p /etc/fail2ban/filter.d
+		cp fail2ban/filter.d/* /etc/fail2ban/filter.d/
+	fi
+
+	systemctl enable --now fail2ban
+	systemctl restart fail2ban
+	log "Fail2Ban 已启用"
 }
 
-# ------------------------------
-# 循环菜单
-# ------------------------------
+# ==========================================
+# 模块 6: Tailscale
+# ==========================================
+install_tailscale() {
+	if command -v tailscale &>/dev/null; then
+		log "Tailscale 已安装"
+	else
+		info "安装 Tailscale..."
+		curl -fsSL https://tailscale.com/install.sh | sh
+		systemctl enable --now tailscaled
+
+		if [ -n "${TAILSCALE_AUTH_KEY:-}" ]; then
+			tailscale up --authkey "$TAILSCALE_AUTH_KEY"
+			log "Tailscale 已自动连接"
+		else
+			warn "Tailscale 安装完成。请手动运行 'tailscale up' 进行登录。"
+		fi
+	fi
+}
+
+# ==========================================
+# 模块 7: UFW (防火墙) - 基础配置
+# ==========================================
+configure_ufw_base() {
+	if ! command -v ufw &>/dev/null; then apt-get install -y ufw; fi
+
+	info "重置 UFW 规则..."
+	# 获取当前实际 SSH 端口，防止把自己锁外面
+	local current_port
+	current_port=$(sshd -T 2>/dev/null | grep "^port " | awk '{print $2}' | head -n 1)
+
+	ufw --force reset
+	ufw default deny incoming
+	ufw default allow outgoing
+
+	# 放行当前端口 (保命)
+	ufw allow "${current_port:-22}/tcp"
+	log "保命规则: 放行当前端口 ${current_port:-22}"
+
+	# 放行业务端口
+	# TCP 放行
+	for port_item in "${TCP_PORTS[@]}"; do
+		for p in $port_item; do ufw allow "$p"/tcp; done
+	done
+
+	# UDP 放行
+	for port_item in "${UDP_PORTS[@]}"; do
+		for p in $port_item; do ufw allow "$p"/udp; done
+	done
+
+	echo "放行 TCP: ${TCP_PORTS[*]}, UDP: ${UDP_PORTS[*]}"
+
+	ufw --force enable
+	log "UFW 已启用"
+}
+
+# ==========================================
+# 模块 8: SSH 加固（root密钥登录）
+# ==========================================
+configure_ssh() {
+	if ! id "$TARGET_USER" &>/dev/null; then
+		error "请先创建用户"
+		return 1
+	fi
+
+	local drop_in_dir="/etc/ssh/sshd_config.d"
+	local custom_config="$drop_in_dir/99-hardened.conf"
+	local ssh_config="/etc/ssh/sshd_config"
+
+	# 2. 准备 Drop-in 配置
+	mkdir -p "$drop_in_dir"
+	if ! grep -q "^Include /etc/ssh/sshd_config.d/\*.conf" "$ssh_config"; then
+		echo "Include /etc/ssh/sshd_config.d/*.conf" >>"$ssh_config"
+	fi
+
+	# 3. 写入配置
+	cat >"$custom_config" <<EOF
+Port $SSH_PORT
+PermitRootLogin prohibit-password
+PasswordAuthentication no
+PubkeyAuthentication yes
+EOF
+
+	# 如果没 Key，强制开密码登录
+	if [ ! -s "/home/$TARGET_USER/.ssh/authorized_keys" ]; then
+		warn "未检测到公钥，强制开启密码登录以防锁死"
+		sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' "$custom_config"
+	fi
+	log "ssh 加固完成"
+}
+
+# ==========================================
+# 菜单系统
+# ==========================================
+show_menu() {
+	echo "------------------------------------------------"
+	echo " 全能初始化脚本 - 目标用户: $TARGET_USER | SSH端口: $SSH_PORT"
+	echo "------------------------------------------------"
+	echo "1) [基础] 创建用户 & Sudo"
+	echo "2) [系统] DNS 优化 (Systemd/WSL 兼容)"
+	echo "3) [软件] 安装 Zsh + Prezto"
+	echo "4) [软件] 安装 Docker (自动加组，日志限制)"
+	echo "5) [网络] 安装 Tailscale"
+	echo "6) [安全] 配置 UFW 防火墙 (基础)"
+	echo "7) [安全] SSH 加固（root密钥登录）"
+	echo "8) [安全] 安装 Fail2Ban (自动适配SSH端口)"
+	echo "9) [一键] 执行所有步骤 (推荐)"
+	echo "0) 退出"
+	echo "------------------------------------------------"
+}
+
+run_all() {
+	install_user
+	configure_dns
+	install_zsh
+	install_docker
+	install_tailscale
+	configure_ufw_base
+	configure_ssh
+	install_fail2ban # 最后运行以捕获最终SSH端口
+}
+
+# --- 主程序入口 ---
+require_root
+
 while true; do
-    echo
-    show_menu
-    read -p "请输入数字选择（多个用空格分隔）: " -a choices
-    for choice in "${choices[@]}"; do
-        install_component $choice || exit 0
-    done
-    echo "=============================="
-    echo "已安装组件: ${installed[*]}"
-    echo "可以继续选择其他组件或输入 0 完成"
+	show_menu
+	read -rp "请选择: " choice
+	case $choice in
+	1) install_user ;;
+	2) configure_dns ;;
+	3) install_zsh ;;
+	4) install_docker ;;
+	5) install_tailscale ;;
+	6) configure_ufw_base ;;
+	7) configure_ssh ;;
+	8) install_fail2ban ;;
+	9) run_all ;;
+	0) exit 0 ;;
+	*) error "无效选择" ;;
+	esac
+	echo ""
+	read -rp "按回车键继续..."
 done
