@@ -325,10 +325,16 @@ configure_ssh() {
 	local ssh_config="/etc/ssh/sshd_config"
 
 	# 2. 准备 Drop-in 配置
-	mkdir -p "$drop_in_dir"
+    if [ ! -d "$drop_in_dir" ]; then
+	    mkdir -p "$drop_in_dir"
+    fi
 	if ! grep -q "^Include /etc/ssh/sshd_config.d/\*.conf" "$ssh_config"; then
 		echo "Include /etc/ssh/sshd_config.d/*.conf" >>"$ssh_config"
 	fi
+
+    if [ ! -f "$custom_config" ]; then
+	    touch "$custom_config"
+    fi
 
 	# 3. 写入配置
 	cat >"$custom_config" <<EOF
