@@ -170,7 +170,6 @@ install_docker() {
 		log "Docker 已安装"
 		if ! need_official_docker; then
 			log "Docker 已满足版本要求"
-			return
 		else
 			info "当前 Docker 版本过低，正在升级..."
 		fi
