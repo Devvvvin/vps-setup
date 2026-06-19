@@ -213,13 +213,16 @@ EOF
 # ==========================================
 install_fail2ban() {
 	info "安装 Fail2Ban..."
+
+	# 安装
 	if ! command -v fail2ban-server &>/dev/null; then
-		apt install -y fail2ban
+		apt update -y && apt install -y fail2ban
 	fi
 
-	# 生成配置
+	# 生成基础配置（只保证 sshd 可用）
 	if [ ! -f "/etc/fail2ban/jail.local" ]; then
 		info "配置 Jail 规则 (保护ssh端口: $SSH_PORT)..."
+
 		cat >/etc/fail2ban/jail.local <<EOF
 [DEFAULT]
 bantime = 1h
@@ -229,29 +232,69 @@ backend = systemd
 
 [sshd]
 enabled = true
-port = ssh
+port = $SSH_PORT
 logpath = %(sshd_log)s
 filter = sshd
 EOF
 	fi
 
-	# 拷贝自定义配置文件（如果有）
+	# 自定义 jail
 	if [ -d "fail2ban/jail.d" ]; then
-		info "拷贝自定义配置文件..."
+		info "拷贝自定义 jail..."
 		mkdir -p /etc/fail2ban/jail.d
-		cp fail2ban/jail.d/* /etc/fail2ban/jail.d/
+		cp -r fail2ban/jail.d/* /etc/fail2ban/jail.d/
 	fi
 
-	# 拷贝自定义 filter 文件（如果有）
+	# filter
 	if [ -d "fail2ban/filter.d" ]; then
-		info "拷贝自定义 filter 文件..."
+		info "拷贝 filter..."
 		mkdir -p /etc/fail2ban/filter.d
-		cp fail2ban/filter.d/* /etc/fail2ban/filter.d/
+		cp -r fail2ban/filter.d/* /etc/fail2ban/filter.d/
 	fi
 
-	systemctl enable --now fail2ban
+	# 启动服务
+	systemctl enable fail2ban
 	systemctl restart fail2ban
-	log "Fail2Ban 已启用"
+
+	# ==========================================
+	# 启动验证
+	# ==========================================
+	sleep 2
+
+	# 1. systemd 状态检查
+	if ! systemctl is-active --quiet fail2ban; then
+		error "Fail2Ban 未运行 (systemd failed)"
+		systemctl status fail2ban --no-pager
+		return 1
+	fi
+
+	# 2. fail2ban-client 检查
+	if ! command -v fail2ban-client &>/dev/null; then
+		error "fail2ban-client 不存在"
+		return 1
+	fi
+
+	# 3. jail 状态检查
+	local jails
+	jails=$(fail2ban-client status 2>/dev/null || true)
+
+	if [[ -z "$jails" ]]; then
+		error "Fail2Ban 启动但无法获取 jail 状态"
+		journalctl -u fail2ban -n 50 --no-pager
+		return 1
+	fi
+
+	# 4. 检查 sshd jail 是否正常
+	if ! echo "$jails" | grep -q "sshd"; then
+		error "sshd jail 未启用或加载失败"
+		fail2ban-client status
+		journalctl -u fail2ban -n 50 --no-pager
+		return 1
+	fi
+
+	# 5. 最终确认
+	log "Fail2Ban 已正常运行 (sshd jail active)"
+	fail2ban-client status sshd || true
 }
 
 # ==========================================
